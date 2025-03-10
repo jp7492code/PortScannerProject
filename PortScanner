@@ -1,45 +1,79 @@
-
 import pyfiglet
-import sys
+import argparse
 import socket
+import asyncio
 from datetime import datetime
 
+# Display ASCII banner
 ascii_banner = pyfiglet.figlet_format("PORT SCANNER")
 print(ascii_banner)
 
-# Defining a target
-if len(sys.argv) == 2:
+# Argument Parsing
+parser = argparse.ArgumentParser(description="Fast Async Python Port Scanner")
+parser.add_argument("target", help="Target hostname or IP address")
+parser.add_argument("-p", "--ports", help="Port range to scan (e.g., 1-1000)", default="1-65535")
+parser.add_argument("-t", "--timeout", help="Timeout for each port (default: 0.5s)", type=float, default=0.5)
+parser.add_argument("-c", "--concurrency", help="Number of concurrent scans (default: 100)", type=int, default=100)
+args = parser.parse_args()
 
-    # translate hostname to IPv4
-    target = socket.gethostbyname(sys.argv[1])
-else:
-    print("Invalid amount of Argument")
-
-# Add Banner
-print("-" * 50)
-print("Scanning Target: " + target)
-print("Scanning started at:" + str(datetime.now()))
-print("-" * 50)
-
+# Resolve hostname
 try:
-
-    # will scan ports between 1 to 65,535
-    for port in range(1,65535):
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        socket.setdefaulttimeout(1)
-
-        # returns an error indicator
-        result = s.connect_ex((target,port))
-        if result ==0:
-            print("Port {} is open".format(port))
-        s.close()
-
-except KeyboardInterrupt:
-        print("\n Exiting Program !!!!")
-        sys.exit()
+    target_ip = socket.gethostbyname(args.target)
 except socket.gaierror:
-        print("\n Hostname Could Not Be Resolved !!!!")
-        sys.exit()
-except socket.error:
-        print("\ Server not responding !!!!")
-        sys.exit()
+    print("Error: Unable to resolve hostname.")
+    exit()
+
+# Parse port range
+try:
+    port_start, port_end = map(int, args.ports.split('-'))
+    if not (1 <= port_start <= port_end <= 65535):
+        raise ValueError
+except ValueError:
+    print("Error: Invalid port range. Use format: start-end (e.g., 1-1000).")
+    exit()
+
+# Print scanning information
+print("-" * 60)
+print(f"Scanning Target: {target_ip} ({args.target})")
+print(f"Scan started at: {datetime.now()}")
+print(f"Port Range: {port_start}-{port_end}")
+print(f"Concurrency Level: {args.concurrency}")
+print("-" * 60)
+
+# Store open ports
+open_ports = []
+
+async def scan_port(port, timeout):
+    """Asynchronously scans a single port."""
+    conn = asyncio.open_connection(target_ip, port)
+    try:
+        reader, writer = await asyncio.wait_for(conn, timeout=timeout)
+        open_ports.append(port)
+        print(f"Port {port} is open")
+        writer.close()
+        await writer.wait_closed()
+    except (asyncio.TimeoutError, ConnectionRefusedError):
+        pass  # Ignore closed ports
+
+async def scan_ports():
+    """Scans all ports asynchronously with concurrency control."""
+    semaphore = asyncio.Semaphore(args.concurrency)
+
+    async def bounded_scan(port):
+        async with semaphore:
+            await scan_port(port, args.timeout)
+
+    tasks = [bounded_scan(port) for port in range(port_start, port_end + 1)]
+    await asyncio.gather(*tasks)
+
+# Run asynchronous scanning
+asyncio.run(scan_ports())
+
+# Final output
+print("-" * 60)
+if open_ports:
+    print("Open Ports:", ', '.join(map(str, sorted(open_ports))))
+else:
+    print("No open ports found.")
+print(f"Scan completed at: {datetime.now()}")
+print("-" * 60)
